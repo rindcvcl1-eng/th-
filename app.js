@@ -1,18 +1,24 @@
 /*
-Single-file demo: Tài Xỉu + Cổ Phiếu (server + client in one)
-Run:
-  npm init -y
-  npm install express socket.io uuid
-  node app.js
-Open http://localhost:3000
+Single-file web demo: Tài Xỉu + Cổ Phiếu (server + client in one file)
+
+Usage:
+  1. Tạo thư mục mới, dán file này thành app.js
+  2. Trong thư mục đó chạy:
+     npm init -y
+     npm install express socket.io uuid
+     node app.js
+  3. Mở trình duyệt: http://localhost:3000
 
 Notes:
-- Lightweight demo: data persisted in data.json (created in same folder).
-- Simple token auth (no bcrypt) for quick testing.
-- Admin step1: "0987654321" -> returns show:true
-- Admin step2: "zxcvbnm" -> unlock admin actions
-- Secret trigger to show admin input in UI is "admindzvailon" (client side)
-- Change timing constants below as you like.
+- Mặc định đã để thời gian production:
+    DICE_ROLL_SECONDS = 180   // 3 phút
+    STOCK_UPDATE_SECONDS = 300 // 5 phút
+    STOCK_AI_INTERVAL_SECONDS = 600 // 10 phút
+  Nếu muốn test nhanh, chỉnh các hằng số này xuống (ví dụ 30/60/90).
+- Admin step1: "0987654321"
+- Admin step2: "zxcvbnm"
+- Bí mật client-side để hiện ô admin: "admindzvailon"
+- Dữ liệu lưu trong data.json (tự tạo trong cùng thư mục)
 */
 
 const express = require('express');
@@ -24,20 +30,19 @@ const { v4: uuidv4 } = require('uuid');
 
 const DATA_FILE = path.join(__dirname, 'data.json');
 
-// Timing / config (for demo use shorter intervals)
-// Set DICE_ROLL_SECONDS = 180 for 3 minutes in production
-const DICE_ROLL_SECONDS = 30; // demo 30s
-const STOCK_UPDATE_SECONDS = 60; // demo 60s
-const STOCK_AI_INTERVAL_SECONDS = 90; // demo 90s
-const AI_BET_INTERVAL_SECONDS = 20; // demo 20s
+// Production timing (change to shorter values for testing)
+const DICE_ROLL_SECONDS = 180; // 3 minutes
+const STOCK_UPDATE_SECONDS = 300; // 5 minutes
+const STOCK_AI_INTERVAL_SECONDS = 600; // 10 minutes
+const AI_BET_INTERVAL_SECONDS = 30; // example AI bet interval
 
 const ADMIN_STEP1 = "0987654321";
 const ADMIN_STEP2 = "zxcvbnm";
 const ADMIN_SHOW_TRIGGER = "admindzvailon";
 
-const STARTING_BALANCE = 10000000; // starting 10,000,000
+const STARTING_BALANCE = 10000000; // 10,000,000
 
-// --- simple persistence ---
+// --- persistence helper ---
 function loadData() {
   if (!fs.existsSync(DATA_FILE)) {
     const initial = {
@@ -46,7 +51,7 @@ function loadData() {
       ais: [],
       stocks: [],
       depositCodes: [],
-      games: [], // pending bets / history entries
+      games: [],
     };
     fs.writeFileSync(DATA_FILE, JSON.stringify(initial, null, 2));
   }
@@ -89,7 +94,7 @@ function rollForOutcome(outcome, betSide) {
   return { dice, sum: dice.reduce((a,b)=>a+b,0), outcome }
 }
 
-// --- initial seed if empty ---
+// --- initial seed ---
 function seedIfEmpty() {
   if (!DB.stocks || DB.stocks.length < 10) {
     const syms = ['ALPHA','BETA','GAMMA','DELTA','EPS','ZETA','ETA','THETA','IOTA','KAPPA','LAMBDA','MU'];
@@ -103,24 +108,27 @@ function seedIfEmpty() {
       { id: 'AI2', name: 'AI_Player', balance: 2000000000, stocks: {} }
     ]
   }
-  saveData(DB)
+  // sample deposit code
+  if (!DB.depositCodes || DB.depositCodes.length === 0) {
+    DB.depositCodes = [{ code: 'DEMO200', amount: 200000, days: 30, createdAt: Date.now(), disabled: false }];
+  }
+  saveData(DB);
 }
 seedIfEmpty();
 
-// --- express + socket ---
+// --- express + socket.io ---
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
 app.use(express.json());
 
-// serve demo page
 app.get('/', (req,res) => {
   res.setHeader('Content-Type','text/html');
   res.send(DemoHTML());
 });
 
-// Simple REST: register/login (no bcrypt for demo) -> token stored server-side
+// Simple REST for register/login (demo: no bcrypt)
 app.post('/register', (req,res) => {
   const { username, password } = req.body;
   if (!username || !password) return res.status(400).send({ error: 'missing' });
@@ -141,7 +149,7 @@ app.post('/login', (req,res) => {
   return res.send({ token, user: { id: user.id, username: user.username, balance: user.balance, stocks: user.stocks } });
 });
 
-// Admin endpoints (step1 & step2 + create/cancel deposit + stock actions)
+// Admin endpoints
 app.post('/admin/show', (req,res) => {
   const { code } = req.body;
   if (code === ADMIN_STEP1) return res.send({ show: true });
@@ -167,7 +175,7 @@ app.post('/admin/cancel-deposit', (req,res) => {
   d.disabled = true; saveData(DB); return res.send({ ok:true });
 });
 app.post('/admin/stock-action', (req,res) => {
-  const { symbol, action } = req.body; // up/down/bankrupt
+  const { symbol, action } = req.body;
   const s = DB.stocks.find(x=>x.symbol===symbol);
   if (!s) return res.status(404).send({ error:'no_stock' });
   if (action === 'up') s.price = Math.floor(s.price * 1.1);
@@ -183,12 +191,11 @@ app.post('/admin/stock-action', (req,res) => {
   return res.send({ ok:true, stock:s });
 });
 
-// serve static helper for socket.io client (socket.io serves /socket.io/socket.io.js automatically)
 // start server
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, ()=>console.log('Listening on', PORT));
 
-// --- Socket.IO logic ---
+// --- Socket logic ---
 io.on('connection', (socket) => {
   console.log('conn', socket.id);
 
@@ -201,26 +208,21 @@ io.on('connection', (socket) => {
     socket.emit('joined', { ok:true, user: u ? { id:u.id, username:u.username, balance:u.balance, stocks:u.stocks } : null });
   });
 
-  // request stocks immediate
   socket.on('request:stocks', ()=>{
     socket.emit('stocks:update', DB.stocks);
   });
 
-  // bet place -> create pending result, emit bet:started with readyAt, after timeout emit bet:ready
   socket.on('bet:place', async ({ amount, side })=>{
-    // amount in integer
     await reloadDB();
-    const tok = socket.handshake.query && socket.handshake.query.token; // not reliable; prefer prior join
     const user = socket.data.user ? findUserById(socket.data.user.id) : null;
     if (!user) { socket.emit('bet:error', { error:'not_logged' }); return; }
     if (![20000,50000,100000,200000,500000].includes(amount)) { socket.emit('bet:error',{ error:'bad_amount' }); return; }
-    user.balance -= amount; // allow negative per spec
+    user.balance -= amount;
     const outcome = weightedChoice();
     const roll = rollForOutcome(outcome, side);
     let result = 'push';
     if (outcome === 'playerWin') { result = 'win'; user.balance += amount*2; }
     else if (outcome === 'playerLose') result = 'lose';
-    // history
     user.history = user.history || [];
     const betId = uuidv4();
     const pending = { id: betId, userId: user.id, amount, side, result, dice: roll.dice, ts: Date.now(), readyAt: Date.now()+DICE_ROLL_SECONDS*1000 };
@@ -228,7 +230,6 @@ io.on('connection', (socket) => {
     user.history.push({ type:'bet', amount, side, result, dice: roll.dice, ts: Date.now() });
     saveData(DB);
     socket.emit('bet:started', { betId, readyAt: pending.readyAt });
-    // schedule ready
     setTimeout(async ()=>{
       await reloadDB();
       const u2 = findUserById(user.id);
@@ -238,11 +239,9 @@ io.on('connection', (socket) => {
   });
 
   socket.on('bet:reveal', ({ betId })=>{
-    // just ack
     socket.emit('bet:revealed', { betId });
   });
 
-  // stock buy
   socket.on('stock:buy', async ({ symbol, qty })=>{
     await reloadDB();
     const user = socket.data.user ? findUserById(socket.data.user.id) : null;
@@ -269,7 +268,6 @@ io.on('connection', (socket) => {
     io.emit('stocks:update', DB.stocks);
   });
 
-  // stock sell
   socket.on('stock:sell', async ({ symbol, qty })=>{
     await reloadDB();
     const user = socket.data.user ? findUserById(socket.data.user.id) : null;
@@ -292,7 +290,6 @@ io.on('connection', (socket) => {
     io.emit('stocks:update', DB.stocks);
   });
 
-  // deposit with code
   socket.on('deposit:code', async ({ code })=>{
     await reloadDB();
     const user = socket.data.user ? findUserById(socket.data.user.id) : null;
@@ -323,10 +320,8 @@ async function reloadDB() {
 function runStockTicker() {
   setInterval(()=>{
     DB.stocks.forEach(s=>{
-      // small random -10%..+10%
       const change = (Math.random() - 0.5) * 0.2;
       s.price = Math.max(1, Math.floor(s.price * (1 + change)));
-      // append to history (keep last 120 points)
       s.history = s.history || [];
       s.history.push({ ts: Date.now(), price: s.price });
       if (s.history.length > 200) s.history.shift();
@@ -336,12 +331,10 @@ function runStockTicker() {
   }, STOCK_UPDATE_SECONDS*1000);
 }
 function runAIOps() {
-  // AI bets
   setInterval(()=>{
     DB.ais.forEach(ai=>{
       const betOptions = [20000,50000,100000,200000,500000];
       const amount = betOptions[Math.floor(Math.random()*betOptions.length)];
-      const side = Math.random() < 0.5 ? 'tai' : 'xiu';
       const outcome = weightedChoice();
       if (outcome === 'playerWin') ai.balance += amount;
       else if (outcome === 'playerLose') ai.balance -= amount;
@@ -350,7 +343,6 @@ function runAIOps() {
     io.emit('ais:update', DB.ais);
   }, AI_BET_INTERVAL_SECONDS*1000);
 
-  // AI stock trading
   setInterval(()=>{
     DB.ais.forEach(ai=>{
       const affordable = DB.stocks.filter(s => s.price <= ai.balance && s.supply > 0);
@@ -372,13 +364,13 @@ function runAIOps() {
 runStockTicker();
 runAIOps();
 
-// --- Demo HTML (client) ---
+// --- Demo web client HTML (served by server) ---
 function DemoHTML(){
   return `<!doctype html>
 <html>
 <head>
 <meta charset="utf-8" />
-<title>Tài Xỉu + Cổ Phiếu (Demo single-file)</title>
+<title>Tài Xỉu + Cổ Phiếu (Web)</title>
 <style>
   body{ font-family: Arial, Helvetica, sans-serif; background:#071025; color:#e6eef8; margin:0; padding:16px; }
   .wrap{ max-width:1100px; margin:0 auto; }
@@ -407,7 +399,7 @@ function DemoHTML(){
 </head>
 <body>
   <div class="wrap">
-    <header><h1>Tài Xỉu + Cổ Phiếu — Demo (single file)</h1></header>
+    <header><h1>Tài Xỉu + Cổ Phiếu — Web</h1></header>
 
     <div class="top">
       <div class="card login">
@@ -424,7 +416,7 @@ function DemoHTML(){
       </div>
 
       <div class="card small">
-        <div>Admin secret trigger (client-side) — để hiện ô admin nhập trong UI, gõ: <strong>${ADMIN_SHOW_TRIGGER}</strong> vào ô bên dưới và bấm Show</div>
+        <div>Admin secret trigger (client-side): <strong>${ADMIN_SHOW_TRIGGER}</strong></div>
         <input id="admin-trigger" placeholder="gõ bí mật để hiện admin" />
         <button id="admin-show">Show</button>
       </div>
@@ -512,7 +504,6 @@ function DemoHTML(){
   };
   $('btn-logout').onclick = ()=>{ localStorage.removeItem('demo_token'); MY={token:null,user:null}; location.reload(); };
 
-  // auto restore
   const saved = localStorage.getItem('demo_token');
   if (saved) { MY.token=saved; socket.emit('join',{token:MY.token}); }
 
@@ -544,7 +535,6 @@ function DemoHTML(){
     if (!currentPending || !currentPending.ready) { alert('Chưa có kết quả để mở hoặc đang chờ'); return; }
     renderCupOpen();
     socket.emit('bet:reveal', { betId: currentPending.betId });
-    // show result in status
     diceStatus.innerText = 'Kết quả: ' + (currentPending.result || '?');
   };
 
@@ -558,7 +548,6 @@ function DemoHTML(){
     };
   });
 
-  // events
   socket.on('bet:started', ({ betId, readyAt })=>{
     currentPending = { betId, readyAt, ready:false };
     renderCupClosed();
@@ -623,11 +612,9 @@ function DemoHTML(){
   });
   socket.emit('request:stocks');
 
-  // buy/sell results
   socket.on('stock:buy:result', (r)=>{ if (r.error) alert('Buy error: '+r.error); else { alert('Mua ok'); } });
   socket.on('stock:sell:result', (r)=>{ if (r.error) alert('Sell error: '+r.error); else { alert('Bán ok'); } });
 
-  // deposit code (simple input via prompt)
   // history
   async function loadHistory(){
     if (!MY.token) return;
@@ -647,7 +634,6 @@ function DemoHTML(){
     }
   });
 
-  // deposit via prompt (quick)
   // Admin UI reveal
   $('admin-show').onclick = ()=>{
     const v = $('admin-trigger').value.trim();
@@ -655,40 +641,37 @@ function DemoHTML(){
     else alert('Secret sai');
   };
 
-  // admin step1/2 calls
-  $('adm-show').onclick = async ()=> {
+  // admin step1/2
+  $('adm-show').onclick = async () => {
     const code = $('adm-step1').value.trim();
     const r = await fetch('/admin/show',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code})});
     const j = await r.json();
     if (j.show) { $('adm-step2-area').style.display='block'; alert('Step1 ok. Nhập step2.'); }
     else alert('Step1 sai');
   };
-  $('adm-unlock').onclick = async ()=> {
+  $('adm-unlock').onclick = async () => {
     const code = $('adm-step2').value.trim();
     const r = await fetch('/admin/unlock',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code})});
     const j = await r.json();
     if (j.unlocked) { $('adm-actions').style.display='block'; alert('Admin unlocked'); } else alert('Step2 sai');
   };
-  $('create-dep').onclick = async ()=> {
+  $('create-dep').onclick = async () => {
     const code = $('dep-code').value.trim(); const amount = Number($('dep-amt').value)||0; const days = Number($('dep-days').value)||0;
     const r = await fetch('/admin/create-deposit-code',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code,amount,days})});
     const j = await r.json(); if (j.ok) alert('Created'); else alert('Err: '+JSON.stringify(j));
   };
-  $('sa-go').onclick = async ()=> {
+  $('sa-go').onclick = async () => {
     const symbol = $('sa-symbol').value.trim(), action = $('sa-action').value;
     const r = await fetch('/admin/stock-action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbol,action})});
     const j = await r.json(); if (j.ok) { alert('Applied'); socket.emit('request:stocks'); } else alert('Err: '+JSON.stringify(j));
   };
 
-  // alerts — for demo, server does not push assistant alerts separately in this minimal version
-  // deposit using prompt
-  window.addEventListener('keydown', (e)=>{ if (e.key==='d' && e.ctrlKey) { // Ctrl+D to deposit
-    const code = prompt('Enter deposit code'); if (!code) return; socket.emit('deposit:code', { code }); 
+  // deposit via Ctrl+D (quick)
+  window.addEventListener('keydown', (e)=>{ if (e.key==='d' && e.ctrlKey) {
+    const code = prompt('Enter deposit code'); if (!code) return; socket.emit('deposit:code', { code });
   }});
-
   socket.on('deposit:result', (r)=>{ if (r.error) alert('Deposit err: '+r.error); else { alert('Nạp thành công. Balance: '+r.balance.toLocaleString()); $('u-balance').innerText = r.balance.toLocaleString(); } });
 
-  // on load: try auto join token then fetch stocks
   if (MY.token) { socket.emit('join', { token: MY.token }); }
 })();
 </script>
